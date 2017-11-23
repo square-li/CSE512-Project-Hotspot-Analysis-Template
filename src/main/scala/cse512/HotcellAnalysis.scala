@@ -10,6 +10,7 @@ object HotcellAnalysis {
   Logger.getLogger("org.apache").setLevel(Level.WARN)
   Logger.getLogger("akka").setLevel(Level.WARN)
   Logger.getLogger("com").setLevel(Level.WARN)
+  var spaceTimeCube : Array[Array[Array[Int]]]
 
 def runHotcellAnalysis(spark: SparkSession, pointPath: String): DataFrame = {
   // Load the original data from a data source
@@ -49,7 +50,7 @@ def runHotcellAnalysis(spark: SparkSession, pointPath: String): DataFrame = {
     r => (r.getInt(0) + "," + r.getInt(1) + "," + r.getInt(2), 1)
   }.reduceByKey(_ + _).sortBy(_._2)
   nextDfRDD.collect().foreach(println)
-  val spaceTimeCube = Array.ofDim[Int](xDiff, yDiff, zDiff)
+  spaceTimeCube = Array.ofDim[Int](xDiff, yDiff, zDiff)
   for ((coord, count) <- nextDfRDD.collect()) {
     val coordInp: List[Int] = coord.split(',').map(_.trim.toInt).toList
     println(coord)
@@ -62,7 +63,7 @@ def runHotcellAnalysis(spark: SparkSession, pointPath: String): DataFrame = {
       for (k <- 0 to zDiff) {
         var cells = get26Cells(i, j, k, xDiff, yDiff, zDiff)
         meanCube(i)(j)(k) = computeMean(cells)
-        sdCube(i)(j)(k) = computeSD(cells)
+        sdCube(i)(j)(k) = computeSD(cells, meanCube(i)(j)(k))
       }
     }
   }
@@ -72,21 +73,24 @@ def runHotcellAnalysis(spark: SparkSession, pointPath: String): DataFrame = {
 
   def get26Cells(x: Int, y: Int, z: Int, xDiff: Int, yDiff: Int, zDiff: Int): Array[Int] = {
     var diffs = Array(-1, 0, 1)
-    var outList: Array[Int] = new Array[Int](27)
+    var outList: Array[Int] = new Array[Int](26)
     val ind = 0
     for(i <- diffs){
       for(j <- diffs){
         for(k <- diffs){
-          if(isInBounds(x+i, y+j, z+k, xDiff, yDiff, zDiff)){
-            outList(ind) = spaceTimeCube(x+i)(y+j)(z+k)
-            ind++
-          }else{
-            outList(ind) = 0
-            ind++
+          if(i!=0 && j!=0 && k!=0) {
+            if (isInBounds(x + i, y + j, z + k, xDiff, yDiff, zDiff)) {
+              outList(ind) = spaceTimeCube(x + i)(y + j)(z + k)
+              ind ++
+            } else {
+              outList(ind) = 0
+              ind ++
+            }
           }
         }
       }
     }
+    return outList
   }
 
   def isInBounds(x: Int, y: Int, z: Int, xDiff: Int, yDiff: Int, zDiff: Int): Boolean = {
@@ -94,10 +98,18 @@ def runHotcellAnalysis(spark: SparkSession, pointPath: String): DataFrame = {
   }
 
   def computeMean(cells: Array[Int]): Double = {
-
+    var sum =0.0
+    for (i <- 0 to 25){
+      sum += cells(i)
+    }
+    return sum/26
   }
 
-  def computeSD(cells: Array[Int]): Double = {
-
+  def computeSD(cells: Array[Int], mean: Double): Double = {
+    var sum =0.0
+    for (i <- 0 to 25){
+      sum += Math.pow(cells(i),2)
+    }
+    return Math.sqrt((sum/26)- Math.pow(mean,2))
   }
 }
