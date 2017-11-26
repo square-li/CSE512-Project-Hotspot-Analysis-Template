@@ -5,12 +5,13 @@ import org.apache.spark.sql.{DataFrame, SparkSession}
 import org.apache.spark.sql.functions.udf
 import org.apache.spark.sql.functions._
 
+import scala.collection.immutable.ListMap
+
 object HotcellAnalysis {
   Logger.getLogger("org.spark_project").setLevel(Level.WARN)
   Logger.getLogger("org.apache").setLevel(Level.WARN)
   Logger.getLogger("akka").setLevel(Level.WARN)
   Logger.getLogger("com").setLevel(Level.WARN)
-  var spaceTimeCube : Array[Array[Array[Int]]]
 
 def runHotcellAnalysis(spark: SparkSession, pointPath: String): DataFrame = {
   // Load the original data from a data source
@@ -44,6 +45,7 @@ def runHotcellAnalysis(spark: SparkSession, pointPath: String): DataFrame = {
   val yDiff = (maxY - minY + 1).toInt
   val zDiff = maxZ - minZ + 1
   val numCells = (maxX - minX + 1) * (maxY - minY + 1) * (maxZ - minZ + 1)
+  var spaceTimeCube = Array.ofDim[Int](xDiff, yDiff, zDiff)
   println(numCells)
 
   val nextDfRDD = pickupInfo.rdd.map {
@@ -53,63 +55,81 @@ def runHotcellAnalysis(spark: SparkSession, pointPath: String): DataFrame = {
   spaceTimeCube = Array.ofDim[Int](xDiff, yDiff, zDiff)
   for ((coord, count) <- nextDfRDD.collect()) {
     val coordInp: List[Int] = coord.split(',').map(_.trim.toInt).toList
-    println(coord)
+    // println(coord)
     spaceTimeCube(coordInp.head - minX.toInt)(coordInp(1) - minY.toInt)(coordInp(2) - minZ.toInt) += count.toInt
   }
-  val meanCube = Array.ofDim[Double](xDiff, yDiff, zDiff)
-  val sdCube = Array.ofDim[Double](xDiff, yDiff, zDiff)
-  for (i <- 0 to xDiff) {
-    for (j <- 0 to yDiff) {
-      for (k <- 0 to zDiff) {
-        var cells = get26Cells(i, j, k, xDiff, yDiff, zDiff)
-        meanCube(i)(j)(k) = computeMean(cells)
-        sdCube(i)(j)(k) = computeSD(cells, meanCube(i)(j)(k))
+  val (mean, sd, totalNumPoints) = computeMeanAndSD(numCells.toInt, xDiff, yDiff, zDiff, spaceTimeCube)
+  var zscore = 0.0
+  var zScoreMap = collection.mutable.Map[String, Double]()
+  for (i <- 0 until xDiff) {
+    for (j <- 0 until yDiff) {
+      for (k <- 0 until zDiff) {
+        val (sm, cnt) = getSumAndCountOfNeighBours(i, j, k, xDiff, yDiff, zDiff, spaceTimeCube)
+        zScoreMap += (formCoordString(i, j, k, minX, minY, minZ) -> calculateZScore(sm, cnt, mean, sd, totalNumPoints.toInt))
       }
     }
+  }
+  val zScoreMapSorted = ListMap(zScoreMap.toSeq.sortWith(_._2 > _._2):_*).take(50)
+  for((k,v) <- zScoreMapSorted){
+    println(k + ';' + v.toString)
   }
 
   return pickupInfo // YOU NEED TO CHANGE THIS PART
 }
 
-  def get26Cells(x: Int, y: Int, z: Int, xDiff: Int, yDiff: Int, zDiff: Int): Array[Int] = {
+  def formCoordString(i: Int, j: Int, k: Int, minX: Double, minY: Double, minZ: Int): String = {
+    return ((i+minX-1)*HotcellUtils.coordinateStep).toString + ',' + ((j+minY-1)*HotcellUtils.coordinateStep).toString +
+      ',' + (k+minZ-1).toString
+  }
+
+  def getSumAndCountOfNeighBours(x: Int, y: Int, z: Int, xDiff: Int, yDiff: Int, zDiff: Int, spaceTimeCube: Array[Array[Array[Int]]]) = {
     var diffs = Array(-1, 0, 1)
-    var outList: Array[Int] = new Array[Int](26)
-    val ind = 0
+    var sm = 0
+    var cnt = 0
     for(i <- diffs){
       for(j <- diffs){
         for(k <- diffs){
           if(i!=0 && j!=0 && k!=0) {
             if (isInBounds(x + i, y + j, z + k, xDiff, yDiff, zDiff)) {
-              outList(ind) = spaceTimeCube(x + i)(y + j)(z + k)
-              ind ++
-            } else {
-              outList(ind) = 0
-              ind ++
+              sm += spaceTimeCube(x + i)(y + j)(z + k)
+              cnt += 1
             }
           }
         }
       }
     }
-    return outList
+    (sm, cnt)
   }
 
   def isInBounds(x: Int, y: Int, z: Int, xDiff: Int, yDiff: Int, zDiff: Int): Boolean = {
     return x >= 0 && x < xDiff && y >= 0 && y < yDiff && z >= 0 && z < zDiff
   }
 
-  def computeMean(cells: Array[Int]): Double = {
-    var sum =0.0
-    for (i <- 0 to 25){
-      sum += cells(i)
+  def computeMeanAndSD(numberOfCells: Int, xDiff: Int, yDiff: Int, zDiff: Int, spaceTimeCube: Array[Array[Array[Int]]]) = {
+    var sm = 0.0
+    var smSquare = 0.0
+    for (i <- 0 until xDiff){
+      for(j <- 0 until yDiff){
+        for(k <- 0 until zDiff){
+          sm += spaceTimeCube(i)(j)(k)
+          smSquare += Math.pow(spaceTimeCube(i)(j)(k), 2)
+        }
+      }
     }
-    return sum/26
+    val mean = sm/numberOfCells
+    val sd = computeSD(numberOfCells, mean, smSquare)
+    (mean, sd, sm)
   }
 
-  def computeSD(cells: Array[Int], mean: Double): Double = {
-    var sum =0.0
-    for (i <- 0 to 25){
-      sum += Math.pow(cells(i),2)
-    }
-    return Math.sqrt((sum/26)- Math.pow(mean,2))
+  def computeSD(numberOfCells: Int, mean: Double, smSquare: Double): Double = {
+    return Math.sqrt((smSquare/numberOfCells)- Math.pow(mean,2))
+  }
+
+  def calculateZScore(sm: Int, cnt: Int, mean: Double, sd: Double, totalNumPoints: Int): Double = {
+    var num = 0.0
+    var den = 0.0
+    num = sm - mean*cnt
+    den = sd*Math.sqrt((cnt*totalNumPoints - Math.pow(cnt, 2))/(totalNumPoints-1))
+    return num/den
   }
 }
