@@ -1,7 +1,7 @@
 package cse512
 
 import org.apache.log4j.{Level, Logger}
-import org.apache.spark.sql.{DataFrame, SaveMode, SparkSession}
+import org.apache.spark.sql.{DataFrame, SQLContext, SaveMode, SparkSession}
 import org.apache.spark.SparkContext._
 
 object HotzoneAnalysis {
@@ -30,16 +30,15 @@ object HotzoneAnalysis {
     val joinDf = spark.sql("select rectangle._c0 as rectangle, point._c5 as point from rectangle,point where ST_Contains(rectangle._c0,point._c5)")
     joinDf.createOrReplaceTempView("joinResult")
     joinDf.show()
-    val nextDf = spark.sql("select rectangle, count(rectangle) from joinResult group by rectangle order by count(rectangle)")
-    nextDf.show(100000)
-//    val nextDfRDD = joinDf.rdd.map{
-//      r => (r.getString(0), 1)
-//    }.reduceByKey(_ + _).sortBy(_._2)
-//    nextDfRDD.collect().foreach(println)
-    //val x = Map(spark.sql("select rectangle from joinResult") -> Integer.parseInt())
-    // YOU NEED TO CHANGE THIS PART
-
-    return joinDf // YOU NEED TO CHANGE THIS PART
+//    val nextDf = spark.sql("select rectangle, count(rectangle) from joinResult group by rectangle order by count(rectangle)")
+//    nextDf.count()
+    val resultRDD = joinDf.rdd.map{
+      r => (r.getString(0), 1)
+    }.reduceByKey(_ + _).sortBy(_._1)
+    val sc = spark.sparkContext
+    val sqlContext = new SQLContext(sc)
+    import sqlContext.implicits._
+    resultRDD.toDF()
   }
 
 }
